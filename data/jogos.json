@@ -1,0 +1,16 @@
+{
+    "jogos": [
+        {
+            "id_jogo": 1,
+            "time1": "Bahia",
+            "time2": "Vitoria",
+            "data": "2025-11-01"
+        },
+        {
+            "id_jogo": 2,
+            "time1": "Flamengo",
+            "time2": "Vasco",
+            "data": "2025-11-02"
+        }
+    ]
+}

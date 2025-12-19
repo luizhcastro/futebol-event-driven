@@ -1,0 +1,19 @@
+{
+    "comentarios": [
+        {
+            "id_jogo": 1,
+            "autor": "Luis",
+            "comentario": "O Bahia vai ganhar!"
+        },
+        {
+            "id_jogo": 1,
+            "autor": "Paulo",
+            "comentario": "O Vitoria vai ganhar!"
+        },
+        {
+            "id_jogo": 2,
+            "autor": "Luis",
+            "comentario": "O Flamengo vai ganhar!"
+        }
+    ]
+}

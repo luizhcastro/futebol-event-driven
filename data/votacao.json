@@ -1,0 +1,19 @@
+{
+    "votacao": [
+        {
+            "id_jogo": 1,
+            "autor": "Luis",
+            "voto": "Bahia"
+        },
+        {
+            "id_jogo": 1,
+            "autor": "Paulo",
+            "voto": "Vitoria"
+        },
+        {
+            "id_jogo": 2,
+            "autor": "Luis",
+            "voto": "Flamengo"
+        }
+    ]
+}

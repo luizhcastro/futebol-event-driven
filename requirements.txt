@@ -1,0 +1,4 @@
+flask
+requests
+pymemcache
+pika>=1.3.0

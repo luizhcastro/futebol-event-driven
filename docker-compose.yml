@@ -1,0 +1,111 @@
+version: "3.1"
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    hostname: rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"    # AMQP protocol
+      - "15672:15672"  # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  jogos:
+    build: .
+    image: jogos-service
+    container_name: jogos
+    hostname: jogos
+    restart: always
+    volumes:
+      - ./app/jogos:/servico
+      - ./app/messaging:/app/messaging
+    command: python3 /servico/servico.py
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: admin
+      RABBITMQ_PASS: admin
+      MEMCACHED_HOST: banco_jogos
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      banco_jogos:
+        condition: service_started
+
+  comentarios:
+    build: .
+    image: comentarios-service
+    container_name: comentarios
+    hostname: comentarios
+    restart: always
+    volumes:
+      - ./app/comentarios:/servico
+      - ./app/messaging:/app/messaging
+    command: python3 /servico/servico.py
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: admin
+      RABBITMQ_PASS: admin
+      MEMCACHED_HOST: banco_comentarios
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      banco_comentarios:
+        condition: service_started
+
+  votacao:
+    build: .
+    image: votacao-service
+    container_name: votacao
+    hostname: votacao
+    restart: always
+    volumes:
+      - ./app/votacao:/servico
+      - ./app/messaging:/app/messaging
+    command: python3 /servico/servico.py
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: admin
+      RABBITMQ_PASS: admin
+      MEMCACHED_HOST: banco_votacao
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      banco_votacao:
+        condition: service_started
+
+  banco_jogos:
+    image: memcached
+    container_name: banco_jogos
+    hostname: banco_jogos
+    restart: always
+    ports:
+      - 11211:11211
+
+  banco_comentarios:
+    image: memcached
+    container_name: banco_comentarios
+    hostname: banco_comentarios
+    restart: always
+    ports:
+      - 11212:11211
+
+  banco_votacao:
+    image: memcached
+    container_name: banco_votacao
+    hostname: banco_votacao
+    restart: always
+    ports:
+      - 11213:11211
+
+volumes:
+  rabbitmq_data:

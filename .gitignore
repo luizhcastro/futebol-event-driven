@@ -1,0 +1,27 @@
+# Ignorar diretórios de ambiente virtual
+venc/
+venv/
+
+# Ignorar arquivos de cache e de compilação
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignorar arquivos de log
+*.log
+
+# Ignorar arquivos de configuração sensíveis (se houver)
+.env
+
+# Ignorar arquivos específicos do Docker
+# docker-compose.yml (se for gerado ou modificado localmente e não deve ser versionado)
+# Dockerfile (se for gerado ou modificado localmente e não deve ser versionado)
+
+# Ignorar arquivos de IDEs (Ex: VS Code)
+.vscode/
+.idea/
+
+# Ignorar arquivos de sistema operacional
+.DS_Store
+thumbs.db
