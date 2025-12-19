@@ -1,243 +1,133 @@
 """
-Serviço de Votação - Arquitetura Orientada a Eventos
-Gerencia votos sobre jogos de futebol através de eventos RabbitMQ
+Serviço de Votação - Arquitetura Event-Driven Simples
+API REST para votação + Consumidor de eventos de jogos
 """
 
-import sys
-import os
-import json
-import logging
+from flask import Flask, Response, request
 from pymemcache.client import base
+from flask_apscheduler import APScheduler
+import json
+import pika
+import os
+from time import sleep
 
-# Adiciona o diretório pai ao path para importar messaging
-sys.path.insert(0, '/app')
-
-from messaging import (
-    RabbitMQConnection,
-    EventPublisher,
-    EventConsumer,
-    RPCServer,
-    Exchanges,
-    Queues,
-    EventTypes,
-    VotoEvent,
-    JogoEvent
-)
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-VERSAO = "2.0-event-driven"
+VERSAO = "2.0-event-driven-simple"
 INFO = {
-    "descricao": "Serviço que gerencia votos sobre jogos de futebol (Event-Driven)",
+    "descricao": "Serviço de votação com RabbitMQ (Simples)",
     "autor": "Luiz Henrique",
     "versao": VERSAO,
-    "arquitetura": "Event-Driven com RabbitMQ"
 }
 
-# Configurações do Memcached
-MEMCACHED_HOST = os.getenv('MEMCACHED_HOST', 'banco_votacao')
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
+MEMCACHED_HOST = os.getenv("MEMCACHED_HOST", "banco_votacao")
 MEMCACHED_PORT = 11211
 
+servico = Flask("votacao")
 
-class VotacaoService:
-    """Serviço de Votação com comunicação via eventos"""
+# Controle de jogos conhecidos (recebidos via eventos)
+jogos_conhecidos = set()
 
-    def __init__(self):
-        self.memcached_client = None
-        self.connection = None
-        self.publisher = None
-        self.consumer = None
-        self.jogos_conhecidos = set()  # Cache de IDs de jogos válidos
 
-    def connect_memcached(self):
-        """Conecta ao Memcached"""
-        try:
-            self.memcached_client = base.Client((MEMCACHED_HOST, MEMCACHED_PORT))
-            logger.info(f"Conectado ao Memcached em {MEMCACHED_HOST}:{MEMCACHED_PORT}")
-        except Exception as e:
-            logger.error(f"Erro ao conectar ao Memcached: {e}")
-            raise
-
-    def setup_rabbitmq(self):
-        """Configura conexão e estruturas do RabbitMQ"""
-        # Conecta ao RabbitMQ
-        self.connection = RabbitMQConnection()
-        self.connection.connect()
-
-        # Configura publisher
-        self.publisher = EventPublisher(self.connection)
-
-        # Declara exchanges (se ainda não existirem)
-        self.publisher.declare_exchange(Exchanges.COMMANDS, 'direct')
-        self.publisher.declare_exchange(Exchanges.QUERIES, 'direct')
-        self.publisher.declare_exchange(Exchanges.EVENTS, 'fanout')
-
-        # Configura consumer
-        self.consumer = EventConsumer(self.connection)
-
-        # Declara e vincula fila de comandos
-        self.consumer.declare_queue(Queues.VOTACAO_COMMAND_CRIAR)
-        self.consumer.bind_queue(
-            Queues.VOTACAO_COMMAND_CRIAR,
-            Exchanges.COMMANDS,
-            EventTypes.VOTO_CRIAR
+def processar_eventos_jogos():
+    """Consome eventos de jogos criados (executado periodicamente)"""
+    try:
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(host=RABBITMQ_HOST)
         )
+        channel = connection.channel()
+        channel.queue_declare(queue="jogos_eventos", durable=True)
 
-        # Declara e vincula fila de queries
-        self.consumer.declare_queue(Queues.VOTACAO_QUERY_LISTAR)
-        self.consumer.bind_queue(
-            Queues.VOTACAO_QUERY_LISTAR,
-            Exchanges.QUERIES,
-            EventTypes.QUERY_VOTACAO
-        )
+        # Processa mensagens disponíveis
+        method_frame, header_frame, body = channel.basic_get(queue="jogos_eventos")
 
-        # Declara e vincula fila para receber eventos de jogos registrados
-        self.consumer.declare_queue(Queues.VOTACAO_EVENTS_JOGO)
-        self.consumer.bind_queue(
-            Queues.VOTACAO_EVENTS_JOGO,
-            Exchanges.EVENTS,
-            EventTypes.JOGO_REGISTRADO
-        )
+        while method_frame:
+            jogo = json.loads(body)
+            jogos_conhecidos.add(jogo["id_jogo"])
+            print(f"[VOTACAO] Jogo recebido: {jogo['id_jogo']} - {jogo['time1']} vs {jogo['time2']}")
 
-        logger.info("RabbitMQ configurado com sucesso")
+            channel.basic_ack(method_frame.delivery_tag)
+            method_frame, header_frame, body = channel.basic_get(queue="jogos_eventos")
 
-    def handle_criar_voto(self, ch, method, properties, message):
-        """Handler para evento voto.criar"""
-        try:
-            logger.info(f"Processando evento voto.criar: {message}")
+        connection.close()
 
-            # Valida e extrai dados
-            voto_event = VotoEvent.from_dict(message)
-            id_jogo = voto_event.id_jogo
+    except Exception as e:
+        print(f"[VOTACAO] Erro ao processar eventos: {str(e)}")
 
-            # Obtém votos existentes para o jogo
-            votos_existentes = self._get_votacao_from_memcached(id_jogo)
 
-            # Adiciona novo voto
-            votos_existentes.append(voto_event.to_dict())
+@servico.get("/")
+def get():
+    return Response(json.dumps(INFO), status=200, mimetype="application/json")
 
-            # Salva no Memcached
-            self.memcached_client.set(
-                f"votacao_{id_jogo}",
-                json.dumps(votos_existentes)
-            )
 
-            logger.info(f"Voto adicionado ao jogo {id_jogo} por {voto_event.autor}: {voto_event.voto}")
+@servico.get("/alive")
+def is_alive():
+    return Response("sim", status=200, mimetype="text/plain")
 
-            # Publica evento voto.registrado (opcional)
-            self.publisher.publish(
-                exchange=Exchanges.EVENTS,
-                routing_key=EventTypes.VOTO_REGISTRADO,
-                message=voto_event.to_dict()
-            )
 
-        except Exception as e:
-            logger.error(f"Erro ao processar voto.criar: {e}")
-            raise
+@servico.post("/votacao/<id_jogo>")
+def adicionar_voto(id_jogo):
+    """Adiciona voto a um jogo"""
+    sucesso = False
+    novo_voto = request.get_json()
 
-    def handle_jogo_registrado(self, ch, method, properties, message):
-        """Handler para evento jogo.registrado (para validação)"""
-        try:
-            jogo_event = JogoEvent.from_dict(message)
-            self.jogos_conhecidos.add(jogo_event.id_jogo)
-            logger.info(f"Jogo {jogo_event.id_jogo} registrado: {jogo_event.time1} vs {jogo_event.time2}")
-        except Exception as e:
-            logger.error(f"Erro ao processar jogo.registrado: {e}")
+    try:
+        cliente = base.Client((MEMCACHED_HOST, MEMCACHED_PORT))
+        votacao_bytes = cliente.get(f"votacao_{id_jogo}")
+        votacao = []
+        if votacao_bytes:
+            votacao = json.loads(votacao_bytes.decode("utf-8"))
 
-    def handle_query_votacao(self, message):
-        """Handler RPC para query.votacao"""
-        try:
-            id_jogo = message.get('id_jogo')
-            logger.info(f"Processando query.votacao para jogo {id_jogo}")
+        votacao.append(novo_voto)
+        cliente.set(f"votacao_{id_jogo}", json.dumps(votacao))
+        cliente.close()
 
-            if id_jogo is None:
-                return {
-                    "votacao": [],
-                    "total": 0,
-                    "status": "error",
-                    "error": "id_jogo não fornecido"
-                }
+        print(f"[VOTACAO] Adicionado ao jogo {id_jogo}: {novo_voto}")
+        sucesso = True
 
-            votacao = self._get_votacao_from_memcached(id_jogo)
+    except Exception as e:
+        print(f"[VOTACAO] Erro ao adicionar: {str(e)}")
 
-            response = {
-                "id_jogo": id_jogo,
-                "votacao": votacao,
-                "total": len(votacao),
-                "status": "success"
-            }
+    return Response(status=201 if sucesso else 422)
 
-            logger.info(f"Query processada: {len(votacao)} votos retornados para jogo {id_jogo}")
-            return response
 
-        except Exception as e:
-            logger.error(f"Erro ao processar query.votacao: {e}")
-            return {
-                "votacao": [],
-                "total": 0,
-                "status": "error",
-                "error": str(e)
-            }
+@servico.get("/votacao/<id_jogo>")
+def get_votacao(id_jogo):
+    """Busca votação de um jogo"""
+    sucesso, votacao = False, []
 
-    def _get_votacao_from_memcached(self, id_jogo):
-        """Obtém lista de votos do Memcached para um jogo específico"""
-        try:
-            votacao_bytes = self.memcached_client.get(f"votacao_{id_jogo}")
-            if votacao_bytes:
-                return json.loads(votacao_bytes.decode("utf-8"))
-            return []
-        except Exception as e:
-            logger.error(f"Erro ao ler votação do Memcached: {e}")
-            return []
+    try:
+        cliente = base.Client((MEMCACHED_HOST, MEMCACHED_PORT))
+        votacao_bytes = cliente.get(f"votacao_{id_jogo}")
+        if votacao_bytes:
+            votacao = json.loads(votacao_bytes.decode("utf-8"))
+        cliente.close()
+        sucesso = True
 
-    def start(self):
-        """Inicia o serviço"""
-        logger.info("=" * 60)
-        logger.info(f"Iniciando {INFO['descricao']}")
-        logger.info(f"Versão: {INFO['versao']}")
-        logger.info(f"Arquitetura: {INFO['arquitetura']}")
-        logger.info("=" * 60)
+    except Exception as e:
+        print(f"[VOTACAO] Erro ao buscar: {str(e)}")
 
-        # Conecta ao Memcached
-        self.connect_memcached()
-
-        # Configura RabbitMQ
-        self.setup_rabbitmq()
-
-        # Registra handlers
-        self.consumer.subscribe(Queues.VOTACAO_COMMAND_CRIAR, self.handle_criar_voto)
-        self.consumer.subscribe(Queues.VOTACAO_EVENTS_JOGO, self.handle_jogo_registrado)
-
-        # Configura RPC server
-        rpc_server = RPCServer(self.consumer)
-        rpc_server.register_rpc_handler(Queues.VOTACAO_QUERY_LISTAR, self.handle_query_votacao)
-
-        # Inicia consumo
-        logger.info("Serviço de Votação pronto para receber eventos!")
-        logger.info(f"Consumindo filas:")
-        logger.info(f"  - {Queues.VOTACAO_COMMAND_CRIAR} (comandos)")
-        logger.info(f"  - {Queues.VOTACAO_QUERY_LISTAR} (queries RPC)")
-        logger.info(f"  - {Queues.VOTACAO_EVENTS_JOGO} (eventos de jogos)")
-        logger.info("=" * 60)
-
-        try:
-            self.consumer.start_consuming()
-        except KeyboardInterrupt:
-            logger.info("Serviço interrompido pelo usuário")
-        finally:
-            self.cleanup()
-
-    def cleanup(self):
-        """Limpeza de recursos"""
-        logger.info("Encerrando serviço...")
-        if self.memcached_client:
-            self.memcached_client.close()
-        if self.connection:
-            self.connection.close()
-        logger.info("Serviço encerrado")
+    return Response(
+        json.dumps(votacao if sucesso else []),
+        status=200 if sucesso else 500,
+        mimetype="application/json",
+    )
 
 
 if __name__ == "__main__":
-    service = VotacaoService()
-    service.start()
+    print("=" * 60)
+    print(f"Iniciando {INFO['descricao']}")
+    print(f"Versão: {INFO['versao']}")
+    print("=" * 60)
+
+    # Inicia agendador para processar eventos em background
+    agendador = APScheduler()
+    agendador.add_job(
+        id="processar_eventos_jogos",
+        func=processar_eventos_jogos,
+        trigger="interval",
+        seconds=3
+    )
+    agendador.start()
+
+    # Inicia Flask
+    servico.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)

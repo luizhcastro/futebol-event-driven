@@ -7,8 +7,8 @@ services:
     hostname: rabbitmq
     restart: always
     ports:
-      - "5672:5672"    # AMQP protocol
-      - "15672:15672"  # Management UI
+      - "5672:5672"
+      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: admin
       RABBITMQ_DEFAULT_PASS: admin
@@ -26,14 +26,13 @@ services:
     container_name: jogos
     hostname: jogos
     restart: always
+    ports:
+      - "5001:5000"
     volumes:
       - ./app/jogos:/servico
-      - ./app/messaging:/app/messaging
     command: python3 /servico/servico.py
     environment:
       RABBITMQ_HOST: rabbitmq
-      RABBITMQ_USER: admin
-      RABBITMQ_PASS: admin
       MEMCACHED_HOST: banco_jogos
     depends_on:
       rabbitmq:
@@ -47,14 +46,13 @@ services:
     container_name: comentarios
     hostname: comentarios
     restart: always
+    ports:
+      - "5002:5000"
     volumes:
       - ./app/comentarios:/servico
-      - ./app/messaging:/app/messaging
     command: python3 /servico/servico.py
     environment:
       RABBITMQ_HOST: rabbitmq
-      RABBITMQ_USER: admin
-      RABBITMQ_PASS: admin
       MEMCACHED_HOST: banco_comentarios
     depends_on:
       rabbitmq:
@@ -68,14 +66,13 @@ services:
     container_name: votacao
     hostname: votacao
     restart: always
+    ports:
+      - "5003:5000"
     volumes:
       - ./app/votacao:/servico
-      - ./app/messaging:/app/messaging
     command: python3 /servico/servico.py
     environment:
       RABBITMQ_HOST: rabbitmq
-      RABBITMQ_USER: admin
-      RABBITMQ_PASS: admin
       MEMCACHED_HOST: banco_votacao
     depends_on:
       rabbitmq:

@@ -1,218 +1,169 @@
 """
-Serviço de Jogos - Arquitetura Orientada a Eventos
-Gerencia informações de jogos de futebol através de eventos RabbitMQ
+Serviço de Jogos - Arquitetura Event-Driven Simples
+Recebe requisições REST, publica eventos no RabbitMQ e consome eventos de jogos
 """
 
-import sys
-import os
-import json
-import logging
+from flask import Flask, Response, request
 from pymemcache.client import base
+from flask_apscheduler import APScheduler
+import json
+import pika
+import os
 
-# Adiciona o diretório pai ao path para importar messaging
-sys.path.insert(0, '/app')
-
-from messaging import (
-    RabbitMQConnection,
-    EventPublisher,
-    EventConsumer,
-    RPCServer,
-    Exchanges,
-    Queues,
-    EventTypes,
-    JogoEvent
-)
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-VERSAO = "2.0-event-driven"
+VERSAO = "2.0-event-driven-simple"
 INFO = {
-    "descricao": "Serviço que gerencia informações sobre jogos de futebol (Event-Driven)",
+    "descricao": "Serviço de jogos com RabbitMQ (Simples)",
     "autor": "Luiz Henrique",
     "versao": VERSAO,
-    "arquitetura": "Event-Driven com RabbitMQ"
 }
 
-# Configurações do Memcached
-MEMCACHED_HOST = os.getenv('MEMCACHED_HOST', 'banco_jogos')
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
+MEMCACHED_HOST = os.getenv("MEMCACHED_HOST", "banco_jogos")
 MEMCACHED_PORT = 11211
 
+servico = Flask("jogos")
 
-class JogosService:
-    """Serviço de Jogos com comunicação via eventos"""
 
-    def __init__(self):
-        self.memcached_client = None
-        self.connection = None
-        self.publisher = None
-        self.consumer = None
+def get_rabbitmq_channel():
+    """Cria conexão simples com RabbitMQ"""
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters(host=RABBITMQ_HOST)
+    )
+    channel = connection.channel()
+    channel.queue_declare(queue="jogos", durable=True)
+    channel.queue_declare(queue="jogos_eventos", durable=True)
+    return channel, connection
 
-    def connect_memcached(self):
-        """Conecta ao Memcached"""
-        try:
-            self.memcached_client = base.Client((MEMCACHED_HOST, MEMCACHED_PORT))
-            logger.info(f"Conectado ao Memcached em {MEMCACHED_HOST}:{MEMCACHED_PORT}")
-        except Exception as e:
-            logger.error(f"Erro ao conectar ao Memcached: {e}")
-            raise
 
-    def setup_rabbitmq(self):
-        """Configura conexão e estruturas do RabbitMQ"""
-        # Conecta ao RabbitMQ
-        self.connection = RabbitMQConnection()
-        self.connection.connect()
-
-        # Configura publisher
-        self.publisher = EventPublisher(self.connection)
-
-        # Declara exchanges
-        self.publisher.declare_exchange(Exchanges.COMMANDS, 'direct')
-        self.publisher.declare_exchange(Exchanges.QUERIES, 'direct')
-        self.publisher.declare_exchange(Exchanges.EVENTS, 'fanout')
-
-        # Configura consumer
-        self.consumer = EventConsumer(self.connection)
-
-        # Declara e vincula fila de comandos
-        self.consumer.declare_queue(Queues.JOGOS_COMMAND_CRIAR)
-        self.consumer.bind_queue(
-            Queues.JOGOS_COMMAND_CRIAR,
-            Exchanges.COMMANDS,
-            EventTypes.JOGO_CRIAR
+def processar_eventos_jogos():
+    """Consome eventos de jogos criados e armazena no Memcached"""
+    try:
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(host=RABBITMQ_HOST)
         )
+        channel = connection.channel()
+        channel.queue_declare(queue="jogos", durable=True)
+        channel.queue_declare(queue="jogos_eventos", durable=True)
 
-        # Declara e vincula fila de queries
-        self.consumer.declare_queue(Queues.JOGOS_QUERY_LISTAR)
-        self.consumer.bind_queue(
-            Queues.JOGOS_QUERY_LISTAR,
-            Exchanges.QUERIES,
-            EventTypes.QUERY_JOGOS
-        )
+        # Processa mensagens disponíveis
+        method_frame, header_frame, body = channel.basic_get(queue="jogos")
 
-        logger.info("RabbitMQ configurado com sucesso")
+        while method_frame:
+            jogo = json.loads(body)
 
-    def handle_criar_jogo(self, ch, method, properties, message):
-        """Handler para evento jogo.criar"""
-        try:
-            logger.info(f"Processando evento jogo.criar: {message}")
+            # Armazena no Memcached
+            try:
+                cliente = base.Client((MEMCACHED_HOST, MEMCACHED_PORT))
+                jogos_bytes = cliente.get("jogos")
+                jogos = []
+                if jogos_bytes:
+                    jogos = json.loads(jogos_bytes.decode("utf-8"))
 
-            # Valida e extrai dados
-            jogo_event = JogoEvent.from_dict(message)
+                # Evita duplicados
+                if not any(j["id_jogo"] == jogo["id_jogo"] for j in jogos):
+                    jogos.append(jogo)
+                    cliente.set("jogos", json.dumps(jogos))
+                    print(f"[JOGOS] Armazenado: {jogo['time1']} vs {jogo['time2']}")
 
-            # Obtém jogos existentes
-            jogos_existentes = self._get_jogos_from_memcached()
+                    # Publica para jogos_eventos (para Comentarios e Votacao)
+                    channel.basic_publish(
+                        exchange="",
+                        routing_key="jogos_eventos",
+                        body=json.dumps(jogo),
+                        properties=pika.BasicProperties(delivery_mode=2)
+                    )
+                    print(f"[JOGOS] Evento publicado para jogos_eventos")
 
-            # Atualiza ou adiciona jogo
-            found = False
-            for i, jogo_existente in enumerate(jogos_existentes):
-                if jogo_existente["id_jogo"] == jogo_event.id_jogo:
-                    jogos_existentes[i] = jogo_event.to_dict()
-                    found = True
-                    logger.info(f"Jogo {jogo_event.id_jogo} atualizado")
-                    break
+                cliente.close()
+            except Exception as e:
+                print(f"[JOGOS] Erro ao armazenar: {str(e)}")
 
-            if not found:
-                jogos_existentes.append(jogo_event.to_dict())
-                logger.info(f"Jogo {jogo_event.id_jogo} criado")
+            channel.basic_ack(method_frame.delivery_tag)
+            method_frame, header_frame, body = channel.basic_get(queue="jogos")
 
-            # Salva no Memcached
-            self.memcached_client.set("jogos", json.dumps(jogos_existentes))
+        connection.close()
 
-            # Publica evento jogo.registrado para outros serviços
-            self.publisher.publish(
-                exchange=Exchanges.EVENTS,
-                routing_key=EventTypes.JOGO_REGISTRADO,
-                message=jogo_event.to_dict()
+    except Exception as e:
+        print(f"[JOGOS] Erro ao processar eventos: {str(e)}")
+
+
+@servico.get("/")
+def get():
+    return Response(json.dumps(INFO), status=200, mimetype="application/json")
+
+
+@servico.get("/alive")
+def is_alive():
+    return Response("sim", status=200, mimetype="text/plain")
+
+
+@servico.post("/jogos")
+def criar_jogos():
+    """Recebe lista de jogos e publica no RabbitMQ"""
+    sucesso = False
+    novos_jogos = request.get_json()
+
+    try:
+        # Publica cada jogo no RabbitMQ
+        channel, connection = get_rabbitmq_channel()
+
+        for jogo in novos_jogos:
+            mensagem = json.dumps(jogo)
+            channel.basic_publish(
+                exchange="",
+                routing_key="jogos",
+                body=mensagem,
+                properties=pika.BasicProperties(delivery_mode=2)  # persistent
             )
+            print(f"[JOGOS] Publicado: {jogo}")
 
-            logger.info(f"Jogo {jogo_event.id_jogo} processado e evento publicado")
+        connection.close()
+        sucesso = True
 
-        except Exception as e:
-            logger.error(f"Erro ao processar jogo.criar: {e}")
-            raise
+    except Exception as e:
+        print(f"[JOGOS] Erro ao publicar: {str(e)}")
 
-    def handle_query_jogos(self, message):
-        """Handler RPC para query.jogos"""
-        try:
-            logger.info("Processando query.jogos")
+    return Response(status=201 if sucesso else 422)
 
-            jogos = self._get_jogos_from_memcached()
 
-            response = {
-                "jogos": jogos,
-                "total": len(jogos),
-                "status": "success"
-            }
+@servico.get("/jogos")
+def get_jogos():
+    """Consulta jogos do Memcached"""
+    sucesso, jogos = False, None
 
-            logger.info(f"Query processada: {len(jogos)} jogos retornados")
-            return response
+    try:
+        cliente = base.Client((MEMCACHED_HOST, MEMCACHED_PORT))
+        jogos_bytes = cliente.get("jogos")
+        if jogos_bytes:
+            jogos = json.loads(jogos_bytes.decode("utf-8"))
+        cliente.close()
+        sucesso = True
 
-        except Exception as e:
-            logger.error(f"Erro ao processar query.jogos: {e}")
-            return {
-                "jogos": [],
-                "total": 0,
-                "status": "error",
-                "error": str(e)
-            }
+    except Exception as e:
+        print(f"[JOGOS] Erro ao buscar: {str(e)}")
 
-    def _get_jogos_from_memcached(self):
-        """Obtém lista de jogos do Memcached"""
-        try:
-            jogos_bytes = self.memcached_client.get("jogos")
-            if jogos_bytes:
-                return json.loads(jogos_bytes.decode("utf-8"))
-            return []
-        except Exception as e:
-            logger.error(f"Erro ao ler jogos do Memcached: {e}")
-            return []
-
-    def start(self):
-        """Inicia o serviço"""
-        logger.info("=" * 60)
-        logger.info(f"Iniciando {INFO['descricao']}")
-        logger.info(f"Versão: {INFO['versao']}")
-        logger.info(f"Arquitetura: {INFO['arquitetura']}")
-        logger.info("=" * 60)
-
-        # Conecta ao Memcached
-        self.connect_memcached()
-
-        # Configura RabbitMQ
-        self.setup_rabbitmq()
-
-        # Registra handlers
-        self.consumer.subscribe(Queues.JOGOS_COMMAND_CRIAR, self.handle_criar_jogo)
-
-        # Configura RPC server
-        rpc_server = RPCServer(self.consumer)
-        rpc_server.register_rpc_handler(Queues.JOGOS_QUERY_LISTAR, self.handle_query_jogos)
-
-        # Inicia consumo
-        logger.info("Serviço de Jogos pronto para receber eventos!")
-        logger.info(f"Consumindo filas:")
-        logger.info(f"  - {Queues.JOGOS_COMMAND_CRIAR} (comandos)")
-        logger.info(f"  - {Queues.JOGOS_QUERY_LISTAR} (queries RPC)")
-        logger.info("=" * 60)
-
-        try:
-            self.consumer.start_consuming()
-        except KeyboardInterrupt:
-            logger.info("Serviço interrompido pelo usuário")
-        finally:
-            self.cleanup()
-
-    def cleanup(self):
-        """Limpeza de recursos"""
-        logger.info("Encerrando serviço...")
-        if self.memcached_client:
-            self.memcached_client.close()
-        if self.connection:
-            self.connection.close()
-        logger.info("Serviço encerrado")
+    return Response(
+        json.dumps(jogos if sucesso and jogos else []),
+        status=200 if sucesso else 500,
+        mimetype="application/json",
+    )
 
 
 if __name__ == "__main__":
-    service = JogosService()
-    service.start()
+    print("=" * 60)
+    print(f"Iniciando {INFO['descricao']}")
+    print(f"Versão: {INFO['versao']}")
+    print("=" * 60)
+
+    # Inicia agendador para processar eventos em background
+    agendador = APScheduler()
+    agendador.add_job(
+        id="processar_eventos_jogos",
+        func=processar_eventos_jogos,
+        trigger="interval",
+        seconds=3
+    )
+    agendador.start()
+
+    # Inicia Flask
+    servico.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)

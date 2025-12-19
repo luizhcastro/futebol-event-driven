@@ -1,168 +1,91 @@
 """
-Cliente Interativo - Arquitetura Orientada a Eventos
-Interface CLI para interagir com os microsserviços via RabbitMQ
-Usa padrão RPC para queries e fire-and-forget para comandos
+Cliente Interativo - Arquitetura Event-Driven Simples
+Interface CLI para interagir com os microsserviços via REST
 """
 
-import sys
 import json
-import logging
+import requests
 from time import sleep
 
-# Adiciona o diretório de messaging ao path
-sys.path.insert(0, 'app')
-
-from messaging import (
-    RabbitMQConnection,
-    EventPublisher,
-    RPCClient,
-    Exchanges,
-    EventTypes,
-    create_comentario_event,
-    create_voto_event
-)
-
-logging.basicConfig(level=logging.WARNING)  # Menos verboso para CLI
-logger = logging.getLogger(__name__)
+# URLs dos serviços
+JOGOS_URL = "http://localhost:5001"
+COMENTARIOS_URL = "http://localhost:5002"
+VOTACAO_URL = "http://localhost:5003"
 
 
-class FutebolRPCClient:
-    """Cliente RPC para interagir com os microsserviços"""
-
-    def __init__(self):
-        self.connection = None
-        self.rpc_client = None
-        self.publisher = None
-
-    def connect(self):
-        """Conecta ao RabbitMQ"""
-        print("Conectando aos serviços...")
-        self.connection = RabbitMQConnection()
-        self.connection.connect()
-
-        # RPC client para queries
-        self.rpc_client = RPCClient(self.connection)
-
-        # Publisher para comandos
-        self.publisher = EventPublisher(self.connection)
-        self.publisher.declare_exchange(Exchanges.COMMANDS, 'direct')
-        self.publisher.declare_exchange(Exchanges.QUERIES, 'direct')
-
-        print("Conectado com sucesso!\n")
-
-    def get_jogos(self):
-        """Busca todos os jogos via RPC"""
-        try:
-            response = self.rpc_client.call(
-                exchange=Exchanges.QUERIES,
-                routing_key=EventTypes.QUERY_JOGOS,
-                message={"request_id": "get_jogos"},
-                timeout=5
-            )
-
-            if response and response.get('status') == 'success':
-                return True, response.get('jogos', [])
-            else:
-                return False, []
-
-        except Exception as e:
-            logger.error(f"Erro ao buscar jogos: {e}")
-            return False, []
-
-    def get_comentarios(self, id_jogo):
-        """Busca comentários de um jogo via RPC"""
-        try:
-            response = self.rpc_client.call(
-                exchange=Exchanges.QUERIES,
-                routing_key=EventTypes.QUERY_COMENTARIOS,
-                message={"request_id": "get_comentarios", "id_jogo": int(id_jogo)},
-                timeout=5
-            )
-
-            if response and response.get('status') == 'success':
-                return True, response.get('comentarios', [])
-            else:
-                return False, []
-
-        except Exception as e:
-            logger.error(f"Erro ao buscar comentários: {e}")
-            return False, []
-
-    def get_votacao(self, id_jogo):
-        """Busca votos de um jogo via RPC"""
-        try:
-            response = self.rpc_client.call(
-                exchange=Exchanges.QUERIES,
-                routing_key=EventTypes.QUERY_VOTACAO,
-                message={"request_id": "get_votacao", "id_jogo": int(id_jogo)},
-                timeout=5
-            )
-
-            if response and response.get('status') == 'success':
-                return True, response.get('votacao', [])
-            else:
-                return False, []
-
-        except Exception as e:
-            logger.error(f"Erro ao buscar votação: {e}")
-            return False, []
-
-    def adicionar_comentario(self, id_jogo, autor, comentario):
-        """Adiciona comentário via evento (fire-and-forget)"""
-        try:
-            event = create_comentario_event(
-                id_jogo=int(id_jogo),
-                autor=autor,
-                comentario=comentario
-            )
-
-            self.publisher.publish(
-                exchange=Exchanges.COMMANDS,
-                routing_key=EventTypes.COMENTARIO_CRIAR,
-                message=event
-            )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Erro ao adicionar comentário: {e}")
-            return False
-
-    def adicionar_voto(self, id_jogo, autor, voto):
-        """Adiciona voto via evento (fire-and-forget)"""
-        try:
-            event = create_voto_event(
-                id_jogo=int(id_jogo),
-                autor=autor,
-                voto=voto
-            )
-
-            self.publisher.publish(
-                exchange=Exchanges.COMMANDS,
-                routing_key=EventTypes.VOTO_CRIAR,
-                message=event
-            )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Erro ao adicionar voto: {e}")
-            return False
-
-    def close(self):
-        """Fecha a conexão"""
-        if self.connection:
-            self.connection.close()
+def get_jogos():
+    """Busca todos os jogos"""
+    try:
+        response = requests.get(f"{JOGOS_URL}/jogos")
+        if response.status_code == 200:
+            return True, response.json()
+        return False, []
+    except Exception as e:
+        print(f"Erro ao buscar jogos: {e}")
+        return False, []
 
 
-# Funções de impressão
+def get_comentarios(id_jogo):
+    """Busca comentários de um jogo"""
+    try:
+        response = requests.get(f"{COMENTARIOS_URL}/comentarios/{id_jogo}")
+        if response.status_code == 200:
+            return True, response.json()
+        return False, []
+    except Exception as e:
+        print(f"Erro ao buscar comentários: {e}")
+        return False, []
+
+
+def get_votacao(id_jogo):
+    """Busca votação de um jogo"""
+    try:
+        response = requests.get(f"{VOTACAO_URL}/votacao/{id_jogo}")
+        if response.status_code == 200:
+            return True, response.json()
+        return False, []
+    except Exception as e:
+        print(f"Erro ao buscar votação: {e}")
+        return False, []
+
+
+def adicionar_comentario(id_jogo, autor, comentario):
+    """Adiciona comentário a um jogo"""
+    try:
+        payload = {"autor": autor, "comentario": comentario}
+        response = requests.post(
+            f"{COMENTARIOS_URL}/comentarios/{id_jogo}",
+            json=payload
+        )
+        return response.status_code == 201
+    except Exception as e:
+        print(f"Erro ao adicionar comentário: {e}")
+        return False
+
+
+def adicionar_voto(id_jogo, autor, voto):
+    """Adiciona voto a um jogo"""
+    try:
+        payload = {"autor": autor, "voto": voto}
+        response = requests.post(
+            f"{VOTACAO_URL}/votacao/{id_jogo}",
+            json=payload
+        )
+        return response.status_code == 201
+    except Exception as e:
+        print(f"Erro ao adicionar voto: {e}")
+        return False
+
+
 def imprimir_jogos(jogos):
     print("\n╔════════════════════════════════════════════════════════════╗")
     print("║              📋 JOGOS DISPONÍVEIS                         ║")
     print("╠════════════════════════════════════════════════════════════╣")
     if jogos:
         for jogo in jogos:
-            print(f"║  ID: {jogo['id_jogo']:<3} │ {jogo['time1']:<15} x {jogo['time2']:<15} │ {jogo['data']:>10} ║")
+            print(
+                f"║  ID: {jogo['id_jogo']:<3} │ {jogo['time1']:<15} x {jogo['time2']:<15} │ {jogo['data']:>10} ║"
+            )
     else:
         print("║  Nenhum jogo disponível                                   ║")
     print("╚════════════════════════════════════════════════════════════╝\n")
@@ -204,10 +127,10 @@ def menu_principal():
     return input("Escolha uma opção: ")
 
 
-def listar_jogos_e_detalhes(client):
+def listar_jogos_e_detalhes():
     """Lista jogos e permite ver detalhes"""
     print("\n🔄 Buscando jogos...")
-    sucesso, jogos = client.get_jogos()
+    sucesso, jogos = get_jogos()
 
     if not sucesso or not jogos:
         print("❌ Não há jogos disponíveis ou erro ao buscar.")
@@ -216,23 +139,21 @@ def listar_jogos_e_detalhes(client):
     imprimir_jogos(jogos)
 
     id_jogo = input("Digite o ID do jogo para ver detalhes (ou 'v' para voltar): ")
-    if id_jogo.lower() == 'v':
+    if id_jogo.lower() == "v":
         return
 
     try:
         id_jogo = int(id_jogo)
 
-        # Busca comentários
         print(f"\n🔄 Buscando comentários do jogo {id_jogo}...")
-        sucesso, comentarios = client.get_comentarios(id_jogo)
+        sucesso, comentarios = get_comentarios(id_jogo)
         if sucesso:
             imprimir_comentarios(id_jogo, comentarios)
         else:
             print("❌ Erro ao buscar comentários.")
 
-        # Busca votação
         print(f"🔄 Buscando votação do jogo {id_jogo}...")
-        sucesso, votacao = client.get_votacao(id_jogo)
+        sucesso, votacao = get_votacao(id_jogo)
         if sucesso:
             imprimir_votacao(id_jogo, votacao)
         else:
@@ -242,7 +163,7 @@ def listar_jogos_e_detalhes(client):
         print("❌ ID de jogo inválido.")
 
 
-def adicionar_novo_comentario(client):
+def adicionar_novo_comentario():
     """Adiciona um novo comentário"""
     print("\n╔════════════════════════════════════════════════════════════╗")
     print("║         💬 ADICIONAR COMENTÁRIO                           ║")
@@ -253,18 +174,17 @@ def adicionar_novo_comentario(client):
         autor = input("Digite seu nome: ")
         comentario = input("Digite seu comentário: ")
 
-        print("\n🔄 Publicando evento de comentário...")
-        if client.adicionar_comentario(id_jogo, autor, comentario):
-            print("✅ Evento de comentário publicado com sucesso!")
-            print("   (O comentário será processado assincronamente)")
+        print("\n🔄 Adicionando comentário...")
+        if adicionar_comentario(id_jogo, autor, comentario):
+            print("✅ Comentário adicionado com sucesso!")
         else:
-            print("❌ Falha ao publicar evento de comentário.")
+            print("❌ Falha ao adicionar comentário.")
 
     except Exception as e:
         print(f"❌ Erro: {e}")
 
 
-def adicionar_novo_voto(client):
+def adicionar_novo_voto():
     """Adiciona um novo voto"""
     print("\n╔════════════════════════════════════════════════════════════╗")
     print("║         🗳️  ADICIONAR VOTO                                ║")
@@ -275,12 +195,11 @@ def adicionar_novo_voto(client):
         autor = input("Digite seu nome: ")
         voto = input("Digite seu voto (nome do time): ")
 
-        print("\n🔄 Publicando evento de voto...")
-        if client.adicionar_voto(id_jogo, autor, voto):
-            print("✅ Evento de voto publicado com sucesso!")
-            print("   (O voto será processado assincronamente)")
+        print("\n🔄 Adicionando voto...")
+        if adicionar_voto(id_jogo, autor, voto):
+            print("✅ Voto adicionado com sucesso!")
         else:
-            print("❌ Falha ao publicar evento de voto.")
+            print("❌ Falha ao adicionar voto.")
 
     except Exception as e:
         print(f"❌ Erro: {e}")
@@ -289,23 +208,19 @@ def adicionar_novo_voto(client):
 if __name__ == "__main__":
     print("╔════════════════════════════════════════════════════════════╗")
     print("║     ⚽ FUTEBOL MICROSERVICES - EVENT-DRIVEN CLI           ║")
-    print("║        Arquitetura Orientada a Eventos com RabbitMQ       ║")
+    print("║        Arquitetura Event-Driven Simples com RabbitMQ     ║")
     print("╚════════════════════════════════════════════════════════════╝\n")
 
-    client = FutebolRPCClient()
-
     try:
-        client.connect()
-
         while True:
             escolha = menu_principal()
 
             if escolha == "1":
-                listar_jogos_e_detalhes(client)
+                listar_jogos_e_detalhes()
             elif escolha == "2":
-                adicionar_novo_comentario(client)
+                adicionar_novo_comentario()
             elif escolha == "3":
-                adicionar_novo_voto(client)
+                adicionar_novo_voto()
             elif escolha == "4":
                 print("\n👋 Saindo... Até logo!\n")
                 break
@@ -318,5 +233,3 @@ if __name__ == "__main__":
         print("\n\n👋 Cliente interrompido pelo usuário. Até logo!\n")
     except Exception as e:
         print(f"\n❌ Erro: {e}\n")
-    finally:
-        client.close()
