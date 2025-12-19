@@ -1,392 +1,309 @@
-# Projeto de Microsserviços de Futebol - Arquitetura Orientada a Eventos
+# Microsserviços de Futebol - Arquitetura Orientada a Eventos
 
-Este projeto demonstra uma **arquitetura de microsserviços orientada a eventos** para gerenciar informações de jogos de futebol, comentários e votos. Ele consiste em três microsserviços principais (`jogos`, `comentarios` e `votacao`) que se comunicam através de eventos usando **RabbitMQ** como message broker.
+Sistema de gerenciamento de jogos de futebol, comentários e votos usando **arquitetura event-driven** com **RabbitMQ**.
 
-## Vídeo Explicativo
-[Clique aqui para assistir o vídeo](https://youtu.be/RFR7ClFlA1M)
+## 🎥 Vídeo Explicativo
+[Assistir vídeo no YouTube](https://youtu.be/RFR7ClFlA1M)
 
 ---
 
-## Arquitetura
+## 🏗️ Arquitetura Event-Driven
 
-### Visão Geral
+### O que é Arquitetura Orientada a Eventos?
 
-Este projeto implementa uma arquitetura orientada a eventos onde os microsserviços se comunicam de forma **assíncrona** através de mensagens no RabbitMQ, ao invés de usar chamadas HTTP síncronas.
+Ao invés dos microsserviços se comunicarem **diretamente via HTTP** (REST), eles se comunicam **indiretamente via mensagens** através de um **message broker** (RabbitMQ).
+
+**Vantagens:**
+- 🔌 **Desacoplamento:** Serviços não conhecem uns aos outros
+- 🛡️ **Resiliência:** Mensagens não se perdem se um serviço cair
+- 📈 **Escalabilidade:** Fácil adicionar múltiplos consumidores
+- ⚡ **Assíncrono:** Não bloqueia esperando resposta
+
+### Como Funciona?
 
 ```
-┌─────────────┐
-│   Crawler   │
-│  (Cliente)  │
-└──────┬──────┘
-       │ publica eventos
-       ▼
-┌─────────────────────────────────────┐
-│           RabbitMQ                  │
-│  ┌─────────────────────────────┐   │
-│  │ Exchanges & Queues          │   │
-│  │ - futebol.commands (direct) │   │
-│  │ - futebol.queries (direct)  │   │
-│  │ - futebol.events (fanout)   │   │
-│  └─────────────────────────────┘   │
-└──────┬──────────┬──────────┬────────┘
-       │          │          │
-       ▼          ▼          ▼
-┌──────────┐ ┌─────────┐ ┌─────────┐
-│  Jogos   │ │Comentar.│ │ Votacao │
-│ Service  │ │ Service │ │ Service │
-└────┬─────┘ └────┬────┘ └────┬────┘
-     │            │           │
-     ▼            ▼           ▼
-┌──────────┐ ┌─────────┐ ┌─────────┐
-│banco_jogos│banco_com.│banco_vot.│
-│(Memcached)│(Memcached)│(Memcached)│
-└──────────┘ └─────────┘ └─────────┘
+┌──────────┐     eventos      ┌──────────┐     eventos      ┌──────────┐
+│ Crawler  │ ──────────────> │ RabbitMQ │ ──────────────> │ Serviços │
+│ Client   │ <────────────── │  Broker  │ <────────────── │  (3)     │
+└──────────┘    respostas    └──────────┘    respostas    └──────────┘
 ```
 
-### Principais Diferenças da Arquitetura REST
-
-| Aspecto | REST (Anterior) | Event-Driven (Atual) |
-|---------|----------------|----------------------|
-| **Comunicação** | HTTP síncrono | Mensagens assíncronas (RabbitMQ) |
-| **Acoplamento** | Serviços conhecem URLs uns dos outros | Serviços desacoplados via broker |
-| **Protocolo** | REST/JSON sobre HTTP | AMQP/JSON sobre RabbitMQ |
-| **Padrão** | Request-Response | Pub/Sub + RPC + Work Queues |
-| **Resiliência** | Falha imediata se serviço está down | Mensagens ficam na fila até processamento |
+**Fluxo:**
+1. **Publicador** (Crawler/Client) envia **evento** para RabbitMQ
+2. RabbitMQ roteia evento para **fila** correta
+3. **Consumidor** (Serviço) processa evento da fila
+4. Serviço confirma processamento (ACK) ou rejeita (NACK)
 
 ---
 
-## Microsserviços
+## 📬 Sistema de Filas e Exchanges
 
-### 1. Serviço de Jogos
-Gerencia informações de jogos de futebol (jogos passados e futuros).
+### Exchanges (Pontos de Entrada)
 
-**Eventos Consumidos:**
-- `jogo.criar` - Cria ou atualiza informações de um jogo
-- `query.jogos` - Consulta todos os jogos (padrão RPC)
+| Exchange | Tipo | Função |
+|----------|------|--------|
+| `futebol.commands` | direct | Recebe **comandos** (criar jogo, comentário, voto) |
+| `futebol.queries` | direct | Recebe **consultas** (listar jogos, comentários, votos) |
+| `futebol.events` | fanout | **Transmite eventos** para múltiplos serviços (pub/sub) |
 
-**Eventos Publicados:**
-- `jogo.registrado` - Notifica outros serviços que um jogo foi armazenado
+### Filas (Destino das Mensagens)
 
-**Armazenamento:** Memcached (`banco_jogos`)
+**Filas de Comando** (Write Operations):
+```
+futebol.commands ──┬──> jogos.command.criar         → Serviço Jogos
+                   ├──> comentarios.command.criar   → Serviço Comentários
+                   └──> votacao.command.criar       → Serviço Votação
+```
 
-### 2. Serviço de Comentários
-Gerencia comentários para jogos específicos.
+**Filas de Consulta** (Read Operations - RPC):
+```
+futebol.queries ───┬──> jogos.query.listar          → Serviço Jogos
+                   ├──> comentarios.query.listar    → Serviço Comentários
+                   └──> votacao.query.listar        → Serviço Votação
+```
 
-**Eventos Consumidos:**
-- `comentario.criar` - Adiciona um comentário a um jogo
-- `query.comentarios` - Consulta comentários de um jogo (padrão RPC)
-- `jogo.registrado` - Recebe notificações de novos jogos (validação)
+**Filas de Eventos** (Pub/Sub):
+```
+futebol.events ────┬──> comentarios.events.jogo     → Serviço Comentários
+(jogo.registrado)  └──> votacao.events.jogo         → Serviço Votação
+```
 
-**Eventos Publicados:**
-- `comentario.registrado` - Confirma que um comentário foi armazenado
+### 3 Padrões de Mensageria Implementados
 
-**Armazenamento:** Memcached (`banco_comentarios`)
+#### 1️⃣ **Work Queue** (Fila de Trabalho)
+- **Uso:** Criar jogos, comentários e votos
+- **Como funciona:** Evento vai para **uma fila**, **um consumidor** processa
+- **Exemplo:** `jogo.criar` → Fila `jogos.command.criar` → Serviço Jogos processa
 
-### 3. Serviço de Votação
-Gerencia votos sobre qual time vencerá um jogo futuro.
+#### 2️⃣ **Pub/Sub** (Publicar/Subscrever)
+- **Uso:** Notificar quando um jogo é registrado
+- **Como funciona:** Evento vai para **todos os subscritores** (fanout)
+- **Exemplo:** Jogos publica `jogo.registrado` → Comentários **e** Votação recebem
 
-**Eventos Consumidos:**
-- `voto.criar` - Adiciona um voto a um jogo
-- `query.votacao` - Consulta votos de um jogo (padrão RPC)
-- `jogo.registrado` - Recebe notificações de novos jogos (validação)
-
-**Eventos Publicados:**
-- `voto.registrado` - Confirma que um voto foi armazenado
-
-**Armazenamento:** Memcached (`banco_votacao`)
-
----
-
-## RabbitMQ - Exchanges e Filas
-
-### Exchanges
-
-| Exchange | Tipo | Propósito |
-|----------|------|-----------|
-| `futebol.commands` | direct | Roteia comandos (criar jogos, comentários, votos) |
-| `futebol.queries` | direct | Roteia consultas (listar jogos, comentários, votos) |
-| `futebol.events` | fanout | Transmite eventos de domínio (jogo.registrado) |
-
-### Filas
-
-**Comandos:**
-- `jogos.command.criar` - Criação de jogos
-- `comentarios.command.criar` - Criação de comentários
-- `votacao.command.criar` - Criação de votos
-
-**Consultas (RPC):**
-- `jogos.query.listar` - Listagem de jogos
-- `comentarios.query.listar` - Listagem de comentários por jogo
-- `votacao.query.listar` - Listagem de votos por jogo
-
-**Eventos:**
-- `comentarios.events.jogo` - Recebe notificações de jogos registrados
-- `votacao.events.jogo` - Recebe notificações de jogos registrados
+#### 3️⃣ **RPC** (Request-Reply)
+- **Uso:** Consultas que precisam de resposta
+- **Como funciona:** Cliente envia query com `correlation_id` e aguarda resposta
+- **Exemplo:** Client pede jogos → Serviço responde com lista de jogos
 
 ---
 
-## Padrões de Mensageria Implementados
-
-### 1. Work Queues (Filas de Trabalho)
-Comandos são distribuídos para os serviços consumirem e processarem.
-
-### 2. Publish/Subscribe (Fanout)
-Quando um jogo é registrado, o evento `jogo.registrado` é transmitido para todos os serviços interessados (Comentários e Votação).
-
-### 3. RPC (Request-Reply)
-Consultas funcionam como chamadas RPC:
-1. Cliente envia uma mensagem de consulta com `reply_to` e `correlation_id`
-2. Serviço processa e responde na fila de resposta
-3. Cliente recebe a resposta correlacionada
-
----
-
-## Configuração e Execução do Projeto
+## 🚀 Como Executar (Primeira Vez)
 
 ### Pré-requisitos
-- Docker e Docker Compose instalados
-- Python 3 e `pip` (para executar `crawler.py` e `client.py`)
+- **Docker** e **Docker Compose** instalados
+- **Python 3** instalado
 
-### 1. Construir e Executar Serviços com Docker Compose
-
-Navegue até o diretório raiz do projeto e execute:
+### Passo 1: Subir os Serviços
 
 ```bash
+# Clone ou navegue até o diretório do projeto
+cd futebol-event-driven
+
+# Suba todos os containers (RabbitMQ + 3 serviços + 3 Memcached)
 docker-compose up --build -d
+
+# Aguarde ~10 segundos para RabbitMQ inicializar completamente
+sleep 10
 ```
 
-Este comando irá:
-- Construir imagens Docker para os serviços `jogos`, `comentarios` e `votacao`
-- Baixar a imagem do RabbitMQ com interface de gerenciamento
-- Baixar as imagens `memcached` para os bancos de dados
-- Iniciar todos os serviços em modo `detached`
+**O que foi iniciado:**
+- ✅ RabbitMQ (ports 5672 e 15672)
+- ✅ Serviço Jogos
+- ✅ Serviço Comentários
+- ✅ Serviço Votação
+- ✅ 3 instâncias Memcached
 
-### 2. Acessar a Interface de Gerenciamento do RabbitMQ
-
-O RabbitMQ Management UI estará disponível em:
-
-```
-http://localhost:15672
-```
-
-**Credenciais:**
-- Usuário: `admin`
-- Senha: `admin`
-
-Através desta interface você pode:
-- Visualizar exchanges, filas e bindings
-- Monitorar mensagens em tempo real
-- Enviar mensagens de teste manualmente
-- Ver estatísticas de consumo e publicação
-
-### 3. Popular Dados (usando Crawler)
-
-O script `crawler.py` lê os dados iniciais dos arquivos JSON em `data/` e os **publica como eventos** no RabbitMQ.
-
-Primeiro, certifique-se de ter as dependências Python instaladas:
+### Passo 2: Verificar se está Funcionando
 
 ```bash
+# Ver logs dos serviços (deve mostrar "pronto para receber eventos")
+docker logs jogos
+docker logs comentarios
+docker logs votacao
+
+# Acessar interface web do RabbitMQ
+# Abra no navegador: http://localhost:15672
+# Usuário: admin | Senha: admin
+```
+
+Na interface RabbitMQ, vá em **Queues** - você deve ver todas as filas criadas.
+
+### Passo 3: Instalar Dependências Python
+
+```bash
+# Criar ambiente virtual
 python3 -m venv venv
-source venv/bin/activate
+
+# Ativar ambiente virtual
+source venv/bin/activate  # Linux/Mac
+# OU
+venv\Scripts\activate     # Windows
+
+# Instalar dependências
 pip install -r requirements.txt
 ```
 
-Em seguida, execute o crawler:
+### Passo 4: Popular Dados Iniciais
 
 ```bash
-python3 crawler.py
+# Executar crawler para publicar eventos de jogos, comentários e votos
+python3 crawler.py --once
+
+# O crawler irá:
+# 1. Ler arquivos data/*.json
+# 2. Publicar eventos no RabbitMQ
+# 3. Serviços processarão automaticamente
 ```
 
-O crawler irá:
-1. Conectar-se ao RabbitMQ
-2. Publicar eventos `jogo.criar` para cada jogo em `data/jogos.json`
-3. Publicar eventos `comentario.criar` para cada comentário em `data/comentarios.json`
-4. Publicar eventos `voto.criar` para cada voto em `data/votacao.json`
+**Saída esperada:**
+```
+Conectando ao RabbitMQ...
+Conexão estabelecida e publisher configurado
+--- Iteração 1 ---
+Evento publicado: jogo.criar - Bahia vs Vitoria
+Evento publicado: jogo.criar - Flamengo vs Vasco
+2 jogos publicados com sucesso
+✓ Jogos publicados
+...
+```
 
-### 4. Usando o Cliente Python
-
-O script `client.py` fornece uma interface de linha de comando interativa que usa o **padrão RPC** para consultas e **fire-and-forget** para comandos.
+### Passo 5: Usar o Cliente Interativo
 
 ```bash
+# Executar cliente CLI
 python3 client.py
 ```
 
-O cliente permite:
-- Listar todos os jogos (RPC)
-- Adicionar comentários a um jogo (fire-and-forget)
-- Adicionar votos a um jogo (fire-and-forget)
-- Listar comentários de um jogo (RPC)
-- Listar votos de um jogo (RPC)
-
----
-
-## Estrutura do Projeto
-
+**Menu do Cliente:**
 ```
-futebol-event-driven/
-├── app/
-│   ├── messaging/               # Camada de mensageria compartilhada
-│   │   ├── __init__.py
-│   │   ├── rabbitmq_client.py   # Conexão, Publisher, Consumer, RPC
-│   │   └── events.py            # Schemas de eventos
-│   ├── jogos/
-│   │   └── servico.py           # Serviço de jogos (event consumer)
-│   ├── comentarios/
-│   │   └── servico.py           # Serviço de comentários (event consumer)
-│   └── votacao/
-│       └── servico.py           # Serviço de votação (event consumer)
-├── data/                        # Dados iniciais JSON
-│   ├── jogos.json
-│   ├── comentarios.json
-│   └── votacao.json
-├── crawler.py                   # Carrega dados publicando eventos
-├── client.py                    # Cliente CLI com RPC
-├── docker-compose.yml           # Orquestração dos serviços
-├── Dockerfile                   # Imagem base dos serviços
-├── requirements.txt             # Dependências Python
-└── README.md                    # Este arquivo
+╔════════════════════════════════════════════════════════════╗
+║     ⚽ FUTEBOL MICROSERVICES - EVENT-DRIVEN CLI           ║
+╠════════════════════════════════════════════════════════════╣
+║  1. 📋 Listar jogos e detalhes                            ║
+║  2. 💬 Adicionar comentário                               ║
+║  3. 🗳️  Adicionar voto                                     ║
+║  4. 🚪 Sair                                                ║
+╚════════════════════════════════════════════════════════════╝
+Escolha uma opção:
 ```
 
----
-
-## Confiabilidade e Tratamento de Erros
-
-### Acknowledgment Manual
-Todos os consumidores usam **manual acknowledgment**:
-- ✅ ACK: Mensagem processada com sucesso
-- ❌ NACK com requeue: Erro transitório (ex: DB temporariamente indisponível)
-- ❌ NACK sem requeue: Erro permanente → Dead Letter Queue
-
-### Dead Letter Queues (DLQ)
-Mensagens que falharam após múltiplas tentativas são enviadas para DLQs:
-- `jogos.command.criar.dlq`
-- `comentarios.command.criar.dlq`
-- `votacao.command.criar.dlq`
-
-### Retry Logic
-- Máximo de 3 tentativas para erros transitórios
-- Backoff exponencial entre tentativas
-- Após esgotadas as tentativas → DLQ
+**Teste:**
+1. Escolha `1` para listar jogos
+2. Digite ID do jogo (ex: `1`) para ver comentários e votos
+3. Escolha `2` para adicionar comentário
+4. Escolha `3` para adicionar voto
 
 ---
 
-## Conceitos de Microsserviços Demonstrados
+## 📊 Visualizar Mensagens no RabbitMQ
 
-Este projeto é uma ferramenta educacional que demonstra:
-
-✅ **Arquitetura Orientada a Eventos** - Comunicação assíncrona via eventos
-✅ **Message Broker** - RabbitMQ como intermediário de mensagens
-✅ **Desacoplamento de Serviços** - Serviços não conhecem uns aos outros
-✅ **Work Queues** - Distribuição de trabalho entre consumidores
-✅ **Publish/Subscribe** - Broadcasting de eventos (fanout)
-✅ **RPC Pattern** - Request-reply assíncrono para consultas
-✅ **Resiliência** - Mensagens persistem na fila se serviço estiver down
-✅ **Escalabilidade** - Múltiplos consumidores podem processar a mesma fila
-✅ **Dead Letter Queues** - Tratamento de falhas permanentes
-✅ **Event-Driven Domain Events** - Eventos de domínio (jogo.registrado)
+1. Acesse http://localhost:15672 (admin/admin)
+2. Clique em **Queues**
+3. Clique em uma fila (ex: `jogos.command.criar`)
+4. Veja estatísticas: mensagens processadas, consumidores ativos, etc.
+5. Use **"Publish message"** para testar envio manual
 
 ---
 
-## Desenvolvimento
-
-### Modificando Serviços
-
-Após fazer alterações em qualquer arquivo, reconstrua os containers:
+## 🔧 Comandos Úteis
 
 ```bash
+# Ver logs em tempo real
+docker logs -f jogos
+
+# Parar todos os serviços
+docker-compose down
+
+# Reiniciar após alterações
 docker-compose down
 docker-compose up --build -d
-```
 
-### Visualizando Logs
+# Executar crawler continuamente (a cada 10s)
+python3 crawler.py
 
-Para ver os logs de um serviço específico:
-
-```bash
-docker logs -f jogos
-docker logs -f comentarios
-docker logs -f votacao
-docker logs -f rabbitmq
-```
-
-### Testando Manualmente com RabbitMQ UI
-
-1. Acesse http://localhost:15672
-2. Vá para a aba "Queues"
-3. Selecione uma fila (ex: `jogos.command.criar`)
-4. Use "Publish message" para enviar eventos de teste
-5. Observe os logs do serviço para ver o processamento
-
----
-
-## Ambiente Virtual Python
-
-É recomendado usar um ambiente virtual Python para gerenciar as dependências:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate  # No Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-Desative o ambiente virtual quando terminar:
-
-```bash
-deactivate
+# Executar crawler apenas uma vez
+python3 crawler.py --once
 ```
 
 ---
 
-## Monitoramento
+## 🏛️ Estrutura dos Serviços
 
-### RabbitMQ Management UI
-- **URL:** http://localhost:15672
-- **Features:**
-  - Visualização de filas e profundidade
-  - Taxa de mensagens por segundo
-  - Consumidores ativos
-  - Histórico de mensagens
+### Serviço de Jogos
+- **Consome:** `jogo.criar`, `query.jogos`
+- **Publica:** `jogo.registrado`
+- **Armazena:** Memcached (banco_jogos)
 
-### Logs dos Serviços
-Cada serviço loga:
-- Eventos recebidos
-- Processamento iniciado
-- Sucesso/falha
-- ACK/NACK decisions
+### Serviço de Comentários
+- **Consome:** `comentario.criar`, `query.comentarios`, `jogo.registrado`
+- **Publica:** `comentario.registrado`
+- **Armazena:** Memcached (banco_comentarios)
 
----
-
-## Comparação: REST vs Event-Driven
-
-### Vantagens da Arquitetura Orientada a Eventos
-
-✅ **Desacoplamento:** Serviços não precisam conhecer a localização uns dos outros
-✅ **Resiliência:** Mensagens não são perdidas se um serviço está offline
-✅ **Escalabilidade:** Fácil adicionar múltiplos consumidores para uma fila
-✅ **Assíncrono:** Não bloqueia esperando resposta (exceto em RPC)
-✅ **Auditoria:** RabbitMQ mantém histórico de mensagens
-✅ **Flexibilidade:** Novos serviços podem subscrever eventos existentes
-
-### Quando Usar Cada Abordagem
-
-**REST/HTTP:**
-- APIs públicas
-- Comunicação síncrona necessária
-- Operações CRUD simples
-- Clientes web/mobile
-
-**Event-Driven:**
-- Comunicação entre microsserviços internos
-- Processamento assíncrono
-- Workflows complexos
-- Necessidade de auditoria e replay
+### Serviço de Votação
+- **Consome:** `voto.criar`, `query.votacao`, `jogo.registrado`
+- **Publica:** `voto.registrado`
+- **Armazena:** Memcached (banco_votacao)
 
 ---
 
-## Autor
+## 🆚 REST vs Event-Driven
 
-Projeto desenvolvido para a disciplina de **Microsserviços** do curso de Sistemas de Informação do IFBA.
+| Característica | REST | Event-Driven |
+|----------------|------|--------------|
+| Comunicação | Síncrona (HTTP) | Assíncrona (Mensagens) |
+| Acoplamento | Alto (conhece URLs) | Baixo (via broker) |
+| Resiliência | Falha se serviço down | Mensagens persistem |
+| Escalabilidade | Horizontal (load balancer) | Múltiplos consumidores |
+| Rastreamento | Logs distribuídos | Broker centraliza |
 
-## Licença
+---
 
-Este projeto é open source e está disponível para fins educacionais.
+## 📚 Conceitos Demonstrados
+
+✅ Arquitetura Orientada a Eventos
+✅ Message Broker (RabbitMQ)
+✅ Work Queues
+✅ Publish/Subscribe (Fanout)
+✅ RPC Pattern (Request-Reply)
+✅ Manual Acknowledgment
+✅ Dead Letter Queues (DLQ)
+✅ Desacoplamento de Serviços
+✅ Comunicação Assíncrona
+
+---
+
+## 🐛 Troubleshooting
+
+**Problema:** Client não conecta ao RabbitMQ
+- **Solução:** Verifique se RabbitMQ está rodando: `docker ps | grep rabbitmq`
+
+**Problema:** Serviços não processam eventos
+- **Solução:** Veja logs: `docker logs jogos` - procure por erros
+
+**Problema:** Filas não aparecem no RabbitMQ UI
+- **Solução:** Serviços criam filas ao iniciar. Reinicie: `docker-compose restart`
+
+**Problema:** Crawler dá erro de conexão
+- **Solução:** Aguarde RabbitMQ inicializar completamente (~10s após `docker-compose up`)
+
+---
+
+## 👨‍💻 Desenvolvido para
+
+Disciplina de **Microsserviços** - IFBA
+Demonstração de arquitetura event-driven com RabbitMQ
+
+---
+
+## 📖 Resumo Rápido
+
+1. **Clone/navegue** até o projeto
+2. **Execute** `docker-compose up --build -d`
+3. **Aguarde** 10 segundos
+4. **Ative** venv: `source venv/bin/activate`
+5. **Instale** deps: `pip install -r requirements.txt`
+6. **Popule** dados: `python3 crawler.py --once`
+7. **Use** cliente: `python3 client.py`
+8. **Monitore** RabbitMQ: http://localhost:15672 (admin/admin)
+
+**Pronto!** 🎉
