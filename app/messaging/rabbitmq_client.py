@@ -188,33 +188,26 @@ class RPCClient:
         self.channel = connection.channel
         self.callback_queue = None
         self.responses = {}
-        self.correlation_id = None
 
         # Cria fila de resposta exclusiva
         result = self.channel.queue_declare(queue='', exclusive=True)
         self.callback_queue = result.method.queue
 
-        # Inicia consumo de respostas em thread separada
+        # Registra callback para respostas (sem auto_ack para melhor controle)
         self.channel.basic_consume(
             queue=self.callback_queue,
             on_message_callback=self._on_response,
             auto_ack=True
         )
 
-        self.thread = threading.Thread(target=self._start_consuming, daemon=True)
-        self.thread.start()
-
-    def _start_consuming(self):
-        """Consome respostas em background"""
-        try:
-            self.channel.start_consuming()
-        except Exception as e:
-            logger.error(f"Erro ao consumir respostas RPC: {e}")
-
     def _on_response(self, ch, method, properties, body):
         """Callback para respostas RPC"""
-        if properties.correlation_id in self.responses:
-            self.responses[properties.correlation_id] = json.loads(body)
+        try:
+            if properties.correlation_id in self.responses:
+                self.responses[properties.correlation_id] = json.loads(body)
+                logger.debug(f"RPC response armazenada: {properties.correlation_id}")
+        except Exception as e:
+            logger.error(f"Erro ao processar resposta RPC: {e}")
 
     def call(self, exchange: str, routing_key: str, message: Dict[str, Any],
              timeout: int = 10) -> Optional[Dict]:
@@ -225,6 +218,7 @@ class RPCClient:
         try:
             body = json.dumps(message, ensure_ascii=False)
 
+            # Publica requisição
             self.channel.basic_publish(
                 exchange=exchange,
                 routing_key=routing_key,
@@ -239,14 +233,21 @@ class RPCClient:
 
             logger.info(f"RPC call: {routing_key} [correlation_id: {correlation_id}]")
 
-            # Aguarda resposta
+            # Aguarda resposta processando eventos
             start_time = time.time()
             while self.responses[correlation_id] is None:
                 if time.time() - start_time > timeout:
                     logger.error(f"Timeout na chamada RPC: {routing_key}")
+                    self.responses.pop(correlation_id, None)
                     return None
-                time.sleep(0.1)
-                self.connection.connection.process_data_events(time_limit=0)
+
+                # Processa eventos de I/O (isso irá chamar _on_response quando houver resposta)
+                try:
+                    self.connection.connection.process_data_events(time_limit=0.1)
+                except Exception as e:
+                    logger.error(f"Erro ao processar eventos: {e}")
+                    self.responses.pop(correlation_id, None)
+                    return None
 
             response = self.responses.pop(correlation_id)
             logger.info(f"RPC response recebida [correlation_id: {correlation_id}]")
@@ -254,6 +255,7 @@ class RPCClient:
 
         except Exception as e:
             logger.error(f"Erro em chamada RPC: {e}")
+            self.responses.pop(correlation_id, None)
             return None
 
 
