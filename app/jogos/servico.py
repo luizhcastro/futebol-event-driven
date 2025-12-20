@@ -1,11 +1,10 @@
 """
-Serviço de Jogos - Arquitetura Event-Driven Simples
-Recebe requisições REST, publica eventos no RabbitMQ e consome eventos de jogos
+Serviço de Jogos - Arquitetura Híbrida (HTTP + Eventos)
+Recebe jogos via HTTP POST, armazena no Memcached e publica eventos para outros serviços
 """
 
 from flask import Flask, Response, request
 from pymemcache.client import base
-from flask_apscheduler import APScheduler
 import json
 import pika
 import os
@@ -25,66 +24,16 @@ servico = Flask("jogos")
 
 
 def get_rabbitmq_channel():
-    """Cria conexão simples com RabbitMQ"""
+    """Cria conexão simples com RabbitMQ para publicar eventos"""
+    credentials = pika.PlainCredentials('admin', 'admin')
     connection = pika.BlockingConnection(
-        pika.ConnectionParameters(host=RABBITMQ_HOST)
+        pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials)
     )
     channel = connection.channel()
-    channel.queue_declare(queue="jogos", durable=True)
     channel.queue_declare(queue="jogos_eventos", durable=True)
     return channel, connection
 
 
-def processar_eventos_jogos():
-    """Consome eventos de jogos criados e armazena no Memcached"""
-    try:
-        connection = pika.BlockingConnection(
-            pika.ConnectionParameters(host=RABBITMQ_HOST)
-        )
-        channel = connection.channel()
-        channel.queue_declare(queue="jogos", durable=True)
-        channel.queue_declare(queue="jogos_eventos", durable=True)
-
-        # Processa mensagens disponíveis
-        method_frame, header_frame, body = channel.basic_get(queue="jogos")
-
-        while method_frame:
-            jogo = json.loads(body)
-
-            # Armazena no Memcached
-            try:
-                cliente = base.Client((MEMCACHED_HOST, MEMCACHED_PORT))
-                jogos_bytes = cliente.get("jogos")
-                jogos = []
-                if jogos_bytes:
-                    jogos = json.loads(jogos_bytes.decode("utf-8"))
-
-                # Evita duplicados
-                if not any(j["id_jogo"] == jogo["id_jogo"] for j in jogos):
-                    jogos.append(jogo)
-                    cliente.set("jogos", json.dumps(jogos))
-                    print(f"[JOGOS] Armazenado: {jogo['time1']} vs {jogo['time2']}")
-
-                    # Publica para jogos_eventos (para Comentarios e Votacao)
-                    channel.basic_publish(
-                        exchange="",
-                        routing_key="jogos_eventos",
-                        body=json.dumps(jogo),
-                        properties=pika.BasicProperties(delivery_mode=2)
-                    )
-                    print(f"[JOGOS] Evento publicado para jogos_eventos")
-
-                cliente.close()
-            except Exception as e:
-                print(f"[JOGOS] Erro ao armazenar: {str(e)}")
-
-            channel.basic_ack(method_frame.delivery_tag)
-            method_frame, header_frame, body = channel.basic_get(queue="jogos")
-
-        connection.close()
-
-    except Exception as e:
-        print(f"[JOGOS] Erro ao processar eventos: {str(e)}")
 
 
 @servico.get("/")
@@ -99,29 +48,55 @@ def is_alive():
 
 @servico.post("/jogos")
 def criar_jogos():
-    """Recebe lista de jogos e publica no RabbitMQ"""
+    """Recebe lista de jogos via HTTP e armazena diretamente no Memcached"""
     sucesso = False
     novos_jogos = request.get_json()
 
     try:
-        # Publica cada jogo no RabbitMQ
-        channel, connection = get_rabbitmq_channel()
+        cliente = base.Client((MEMCACHED_HOST, MEMCACHED_PORT))
 
+        # Busca jogos existentes
+        jogos_bytes = cliente.get("jogos")
+        jogos = []
+        if jogos_bytes:
+            jogos = json.loads(jogos_bytes.decode("utf-8"))
+
+        # Adiciona novos jogos (evitando duplicados)
         for jogo in novos_jogos:
-            mensagem = json.dumps(jogo)
-            channel.basic_publish(
-                exchange="",
-                routing_key="jogos",
-                body=mensagem,
-                properties=pika.BasicProperties(delivery_mode=2)  # persistent
-            )
-            print(f"[JOGOS] Publicado: {jogo}")
+            if not any(j["id_jogo"] == jogo["id_jogo"] for j in jogos):
+                jogos.append(jogo)
+                print(f"[JOGOS] Armazenado via HTTP: {jogo['time1']} vs {jogo['time2']}", flush=True)
+            else:
+                print(f"[JOGOS] Jogo duplicado ignorado: {jogo['id_jogo']}", flush=True)
 
-        connection.close()
+        # Salva de volta no Memcached
+        cliente.set("jogos", json.dumps(jogos))
+        cliente.close()
+
+        # Publica eventos para outros serviços (Comentarios e Votacao)
+        try:
+            channel, connection = get_rabbitmq_channel()
+            eventos_publicados = 0
+            for jogo in novos_jogos:
+                # Publica apenas jogos novos (não duplicados)
+                if any(j["id_jogo"] == jogo["id_jogo"] for j in jogos):
+                    channel.basic_publish(
+                        exchange="",
+                        routing_key="jogos_eventos",
+                        body=json.dumps(jogo),
+                        properties=pika.BasicProperties(delivery_mode=2)
+                    )
+                    eventos_publicados += 1
+                    print(f"[JOGOS] Evento publicado para jogos_eventos: {jogo['id_jogo']}", flush=True)
+            connection.close()
+            print(f"[JOGOS] Total de eventos publicados: {eventos_publicados}", flush=True)
+        except Exception as e:
+            print(f"[JOGOS] Aviso: Erro ao publicar eventos (não crítico): {str(e)}", flush=True)
+
         sucesso = True
 
     except Exception as e:
-        print(f"[JOGOS] Erro ao publicar: {str(e)}")
+        print(f"[JOGOS] Erro ao armazenar: {str(e)}")
 
     return Response(status=201 if sucesso else 422)
 
@@ -154,16 +129,6 @@ if __name__ == "__main__":
     print(f"Iniciando {INFO['descricao']}")
     print(f"Versão: {INFO['versao']}")
     print("=" * 60)
-
-    # Inicia agendador para processar eventos em background
-    agendador = APScheduler()
-    agendador.add_job(
-        id="processar_eventos_jogos",
-        func=processar_eventos_jogos,
-        trigger="interval",
-        seconds=3
-    )
-    agendador.start()
 
     # Inicia Flask
     servico.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)

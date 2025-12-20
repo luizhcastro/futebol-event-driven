@@ -3,7 +3,7 @@
 Sistema de gerenciamento de jogos de futebol, comentários e votos usando **arquitetura event-driven** com **RabbitMQ**.
 
 ## 🎥 Vídeo Explicativo
-[Assistir vídeo no YouTube](https://youtu.be/RFR7ClFlA1M)
+[Assistir vídeo no YouTube](https://youtu.be/PJhHu_HUp98)
 
 ---
 
@@ -129,7 +129,7 @@ Ao invés dos microsserviços se comunicarem **diretamente via HTTP**, eles se c
 
 ```bash
 # No diretório raiz do projeto
-docker-compose up --build
+docker-compose up --build -d
 ```
 
 Isso iniciará:
@@ -339,74 +339,3 @@ curl -X POST http://localhost:5002/comentarios/1 \
 # Ver comentários
 curl http://localhost:5002/comentarios/1
 ```
-
----
-
-## 🎓 Conceitos Aprendidos
-
-Este projeto demonstra na prática:
-
-1. **Arquitetura Orientada a Eventos (Event-Driven Architecture)**
-   - Comunicação via mensagens ao invés de chamadas diretas
-   - Desacoplamento entre serviços
-
-2. **Message Broker (RabbitMQ)**
-   - Filas persistentes (durable queues)
-   - Acknowledgment manual
-   - Produtores e consumidores
-
-3. **Padrões de Mensageria**
-   - Work Queue (distribuição de trabalho)
-   - Fan-out simplificado (notificação para múltiplos serviços)
-
-4. **Microsserviços**
-   - Serviços independentes
-   - Cada serviço com seu próprio banco de dados (Memcached)
-   - APIs REST para comunicação externa
-
-5. **Polling com APScheduler**
-   - Execução periódica de tarefas
-   - Processamento assíncrono
-
----
-
-## 🆚 Comparação com Kafka
-
-Este projeto é intencionalmente simples, similar a projetos básicos com Kafka:
-
-| Aspecto | RabbitMQ (este projeto) | Kafka |
-|---------|-------------------------|-------|
-| Biblioteca Python | `pika` | `confluent-kafka` |
-| Consumer | `basic_get()` com polling | `consumer.poll()` |
-| Producer | `basic_publish()` | `producer.produce()` |
-| Polling | APScheduler (3s) | Loop próprio do Kafka |
-| Complexidade | Simples | Simples |
-| Abstrações | Mínimas (chamadas diretas) | Mínimas |
-
----
-
-## 📚 Próximos Passos
-
-Para evoluir este projeto:
-
-1. **Adicionar autenticação** nos endpoints REST
-2. **Implementar Dead Letter Queue (DLQ)** para mensagens com erro
-3. **Adicionar retry automático** em caso de falha no processamento
-4. **Implementar health checks** nos serviços
-5. **Adicionar métricas** (Prometheus + Grafana)
-6. **Criar testes automatizados**
-7. **Implementar circuit breaker** para chamadas HTTP
-
----
-
-## 👨‍💻 Autor
-
-**Luiz Henrique**
-- Projeto para disciplina de Microsserviços - IFBA
-- Versão: 2.0-event-driven-simple
-
----
-
-## 📄 Licença
-
-Este projeto é educacional e de código aberto.

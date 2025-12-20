@@ -31,8 +31,9 @@ jogos_conhecidos = set()
 def processar_eventos_jogos():
     """Consome eventos de jogos criados (executado periodicamente)"""
     try:
+        credentials = pika.PlainCredentials('admin', 'admin')
         connection = pika.BlockingConnection(
-            pika.ConnectionParameters(host=RABBITMQ_HOST)
+            pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials)
         )
         channel = connection.channel()
         channel.queue_declare(queue="jogos_eventos", durable=True)
@@ -121,6 +122,7 @@ if __name__ == "__main__":
 
     # Inicia agendador para processar eventos em background
     agendador = APScheduler()
+    agendador.init_app(servico)
     agendador.add_job(
         id="processar_eventos_jogos",
         func=processar_eventos_jogos,

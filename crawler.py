@@ -1,32 +1,22 @@
 """
-Crawler - Carrega dados iniciais através de eventos RabbitMQ (Simples)
-Lê arquivos JSON e publica eventos na fila "jogos"
+Crawler - Carrega dados iniciais através de HTTP
+Lê arquivos JSON e envia via POST para o serviço de jogos
 """
 
 import json
-import pika
+import requests
 import os
 from time import sleep
 
-RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
+JOGOS_SERVICE_URL = os.getenv("JOGOS_SERVICE_URL", "http://localhost:5001")
 
 JOGOS = "data/jogos.json"
 COMENTARIOS = "data/comentarios.json"
 VOTACAO = "data/votacao.json"
 
 
-def get_rabbitmq_channel():
-    """Cria conexão simples com RabbitMQ"""
-    connection = pika.BlockingConnection(
-        pika.ConnectionParameters(host=RABBITMQ_HOST)
-    )
-    channel = connection.channel()
-    channel.queue_declare(queue="jogos", durable=True)
-    return channel, connection
-
-
 def enviar_jogos():
-    """Publica jogos na fila RabbitMQ"""
+    """Envia jogos via HTTP POST para o serviço de jogos"""
     sucesso = False
 
     try:
@@ -34,21 +24,20 @@ def enviar_jogos():
             conteudo = json.load(arquivo)
             jogos = conteudo["jogos"]
 
-        channel, connection = get_rabbitmq_channel()
+        # Envia todos os jogos em uma única requisição POST
+        response = requests.post(
+            f"{JOGOS_SERVICE_URL}/jogos",
+            json=jogos,
+            headers={"Content-Type": "application/json"}
+        )
 
-        for jogo in jogos:
-            mensagem = json.dumps(jogo)
-            channel.basic_publish(
-                exchange="",
-                routing_key="jogos",
-                body=mensagem,
-                properties=pika.BasicProperties(delivery_mode=2)  # persistent
-            )
-            print(f"[CRAWLER] Publicado jogo: {jogo['time1']} vs {jogo['time2']}")
-
-        connection.close()
-        sucesso = True
-        print(f"[CRAWLER] {len(jogos)} jogos publicados com sucesso")
+        if response.status_code == 201:
+            sucesso = True
+            print(f"[CRAWLER] {len(jogos)} jogos enviados com sucesso")
+            for jogo in jogos:
+                print(f"[CRAWLER] Enviado jogo: {jogo['time1']} vs {jogo['time2']}")
+        else:
+            print(f"[CRAWLER] Erro HTTP {response.status_code} ao enviar jogos")
 
     except Exception as e:
         print(f"[CRAWLER] Erro ao enviar jogos: {e}")
@@ -71,8 +60,8 @@ def enviar_votacao():
 def run_crawler(loop=True, interval=10):
     """Executa o crawler"""
     print("=" * 60)
-    print("Iniciando Crawler Simples")
-    print("Publicando jogos para RabbitMQ")
+    print("Iniciando Crawler HTTP")
+    print(f"Enviando jogos para {JOGOS_SERVICE_URL}")
     print("=" * 60)
 
     try:
@@ -108,7 +97,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Event Crawler Simples - Publica eventos de jogos"
+        description="HTTP Crawler - Envia jogos via HTTP POST"
     )
     parser.add_argument(
         "--once", action="store_true", help="Executa apenas uma vez (sem loop)"
